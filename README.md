@@ -10,7 +10,7 @@ where $\hat{\pi}$ is the share of treated units that pass the break test and $\a
 
 ### Paper
 
-[Inferring Treatment Compliance from Delivery-Window Data](note/inferred_compliance_note.pdf) develops the estimator, derives the delta method variance, and shows in simulations that the 95% CI achieves coverage between 0.947 and 0.974 across twelve parameter configurations.
+[Inferring Treatment Compliance from Delivery-Window Data](https://github.com/finite-sample/late/blob/main/note/inferred_compliance_note.pdf) develops the estimator, derives the delta method variance, and shows in simulations that the 95% CI achieves coverage between 0.947 and 0.974 across twelve parameter configurations.
 
 ### Replication
 
