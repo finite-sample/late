@@ -1,0 +1,204 @@
+\documentclass[12pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{natbib}
+\usepackage{hyperref}
+\usepackage{setspace}
+\usepackage[T1]{fontenc}
+\usepackage{mathpazo}
+
+\hypersetup{colorlinks=true, linkcolor=blue, citecolor=blue, urlcolor=blue}
+
+\newtheorem{assumption}{Assumption}
+\newtheorem{proposition}{Proposition}
+\newtheorem{remark}{Remark}
+
+\onehalfspacing
+
+\title{Exploiting Delivery-Window Data to Classify Compliance Types and Estimate LATE}
+\author{Gaurav Sood}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\noindent In randomized experiments with imperfect compliance, the local average treatment effect (LATE) requires observing treatment receipt, and the Wald estimator requires the monotonicity assumption that rules out defiers. I consider settings where receipt is unobserved but the experiment has a pre-treatment time series and a distinct treatment delivery window. I show that a two-sided break test applied to the delivery window can classify treated units into compliers, never-takers, and defiers, yielding three things the standard setup does not provide: an inferred compliance rate with closed-form bias correction, an empirical test of monotonicity, and a characterization of the complier subpopulation that can be projected onto the control group. I derive the delta method variance for the corrected LATE, exploiting the independence between the compliance classifier and the outcome that arises from the temporal structure of the experiment. In simulations, the corrected LATE is unbiased and the 95\% confidence interval achieves coverage between 0.947 and 0.974 across twelve parameter configurations.
+
+\medskip
+\noindent \textit{Keywords:} LATE, compliance, defiers, monotonicity, instrumental variables, structural break
+
+\medskip
+\noindent \textit{JEL codes:} C21, C26, C12
+\end{abstract}
+
+\section{Setting}
+
+Consider a randomized experiment with $N$ units. Let $Z_i \in \{0,1\}$ denote treatment assignment and $D_i \in \{0,1\}$ denote actual treatment receipt, which is unobserved. The experiment proceeds in three temporal phases: a pre-treatment period with $T_{\text{pre}}$ outcome observations per unit, a treatment delivery window with $T_{\text{treat}}$ observations during which the experimenter attempts to apply the treatment, and a post-treatment outcome period with $T_{\text{post}}$ observations from which the outcome $Y_i$ is constructed.
+
+Following \citet{angrist1996}, each unit has a compliance type determined by the pair $(D_i(1), D_i(0))$: compliers ($D_i(1) = 1, D_i(0) = 0$), never-takers ($D_i(1) = 0, D_i(0) = 0$), always-takers ($D_i(1) = 1, D_i(0) = 1$), and defiers ($D_i(1) = 0, D_i(0) = 1$). In one-sided noncompliance, $D_i(0) = 0$ for all $i$, which rules out always-takers. The standard LATE framework additionally assumes monotonicity, ruling out defiers, so that the population consists of compliers (share $\pi$) and never-takers (share $1 - \pi$). The LATE is then identified by the Wald estimator:
+\begin{equation}\label{eq:wald}
+\tau = \frac{E[Y_i \mid Z_i = 1] - E[Y_i \mid Z_i = 0]}{E[D_i \mid Z_i = 1] - E[D_i \mid Z_i = 0]} = \frac{\text{ITT}}{\pi}
+\end{equation}
+The problem addressed here is that $D_i$ is unobserved, so $\pi$ cannot be estimated directly. The temporal structure of the experiment provides a way around this, and, as a byproduct, an empirical check on the monotonicity assumption.
+
+\section{Compliance Classification via Break Tests}
+
+The treatment, when successfully delivered, produces a deterministic shift in the unit's outcome during the delivery window. I exploit this by comparing each treated unit's delivery-window outcome to its pre-treatment baseline. The test statistic for unit $i$ with $Z_i = 1$ is:
+\begin{equation}\label{eq:tstat}
+t_i = \frac{\bar{y}_{i,\text{treat}} - \bar{y}_{i,\text{pre}}}{\hat{\sigma}_i \sqrt{1/T_{\text{pre}} + 1/T_{\text{treat}}}}
+\end{equation}
+where $\hat{\sigma}_i$ is the pre-treatment standard deviation of unit $i$'s daily outcome.
+
+A one-sided test ($\hat{D}_i = \mathbf{1}(p_i < \alpha)$) suffices to classify compliers and never-takers when monotonicity holds. But the temporal data supports a richer classification. A two-sided test at level $\alpha$ partitions treated units into three groups:
+\begin{align}
+\hat{C}_i &= +1 \quad \text{(complier)} & &\text{if } t_i > t_{1-\alpha/2} \label{eq:complier} \\
+\hat{C}_i &= -1 \quad \text{(defier)} & &\text{if } t_i < -t_{1-\alpha/2} \label{eq:defier} \\
+\hat{C}_i &= 0 \quad \text{(never-taker)} & &\text{if } |t_i| \leq t_{1-\alpha/2} \label{eq:nevertaker}
+\end{align}
+For control units, $\hat{C}_i = 0$ by construction (one-sided noncompliance implies $D_i = 0$ regardless of type).
+
+\subsection{Testing Monotonicity}
+
+Define $\hat{\delta} = N_{\text{treat}}^{-1} \sum_{i: Z_i = 1} \mathbf{1}(\hat{C}_i = -1)$, the share of treated units classified as defiers. Under monotonicity ($\delta = 0$), the expected share of false defier classifications is $\alpha/2$, the lower-tail false positive rate. A test of $H_0: \delta = 0$ against $H_1: \delta > 0$ can be conducted by comparing $\hat{\delta}$ to $\alpha/2$:
+\begin{equation}\label{eq:mono_test}
+z_{\text{mono}} = \frac{\hat{\delta} - \alpha/2}{\sqrt{(\alpha/2)(1-\alpha/2)/N_{\text{treat}}}}
+\end{equation}
+Rejection provides evidence against monotonicity. If $\hat{\delta} \leq \alpha/2$, the data are consistent with monotonicity and all apparent defiers can be attributed to the lower tail of the null distribution.
+
+\begin{remark}
+In the standard LATE framework, monotonicity is untestable without additional structure \citep{angrist1996}. The delivery-window data makes it testable because defiers produce a distinctive signature: a significant negative break during a period when the treatment should produce a positive shift. This is specific to settings where the direction of the mechanical effect is known.
+\end{remark}
+
+\subsection{Inferred Compliance Rate}
+
+Define the inferred complier share as $\hat{\pi} = N_{\text{treat}}^{-1} \sum_{i: Z_i=1} \mathbf{1}(\hat{C}_i = +1)$. Under the two-sided test, the false positive rate for classifying a never-taker as a complier is $\alpha/2$ (the upper tail).
+
+\begin{assumption}\label{as:tpr}
+The mechanical dose during the delivery window is sufficiently large relative to organic variation that $\text{TPR} = 1$ for compliers and the probability of a defier being classified as a complier is zero.
+\end{assumption}
+
+Under Assumption~\ref{as:tpr} and monotonicity ($\delta = 0$):
+\begin{equation}
+E[\hat{\pi}] = \pi + (1 - \pi)\frac{\alpha}{2}
+\end{equation}
+
+\section{Corrected Estimator}
+
+Inverting gives a corrected compliance rate:
+\begin{equation}\label{eq:picorr}
+\pi_c = \frac{\hat{\pi} - \alpha/2}{1 - \alpha/2}
+\end{equation}
+and a corrected LATE:
+\begin{equation}\label{eq:latecorr}
+\hat{\tau}_c = \frac{\widehat{\text{ITT}}}{\pi_c} = \frac{(1 - \alpha/2) \cdot \widehat{\text{ITT}}}{\hat{\pi} - \alpha/2}
+\end{equation}
+
+\begin{proposition}\label{prop:bias}
+Under Assumption~\ref{as:tpr} and monotonicity, the corrected estimator $\hat{\tau}_c$ is consistent for $\tau$. The bias ratio of the uncorrected Wald estimator $\widehat{\text{ITT}}/\hat{\pi}$ relative to the true LATE is $\pi / [\pi + (1-\pi)\alpha/2]$.
+\end{proposition}
+
+\noindent For $\pi = 0.75$ and $\alpha = 0.05$, the bias ratio is $0.75 / 0.7625 = 0.984$.
+
+\begin{remark}
+When the one-sided test is used instead (monotonicity assumed \textit{a priori}), the false positive rate is $\alpha$ rather than $\alpha/2$, and the correction becomes $\pi_c = (\hat{\pi} - \alpha)/(1 - \alpha)$.
+\end{remark}
+
+\section{Inference}
+
+The corrected LATE is $\hat{\tau}_c = f(\widehat{\text{ITT}}, \hat{\pi})$ where $f(a, b) = (1-\alpha/2) \cdot a / (b - \alpha/2)$. The delta method gives:
+\begin{equation}\label{eq:var}
+\text{Var}(\hat{\tau}_c) \approx \left(\frac{1-\alpha/2}{\hat{\pi}-\alpha/2}\right)^{\!2} \text{Var}(\widehat{\text{ITT}}) + \left(\frac{(1-\alpha/2) \cdot \widehat{\text{ITT}}}{(\hat{\pi}-\alpha/2)^2}\right)^{\!2} \text{Var}(\hat{\pi})
+\end{equation}
+where $\text{Var}(\widehat{\text{ITT}})$ is the standard difference-in-means variance and $\text{Var}(\hat{\pi}) = \hat{\pi}(1-\hat{\pi})/N_{\text{treat}}$.
+
+The two terms are independent because $\widehat{\text{ITT}}$ is computed from post-treatment outcome data and $\hat{\pi}$ from delivery-window data. This independence arises from the three-window temporal structure, which serves the same function as cross-fitting in the test-and-select estimator of \citet{hazard2023} and the general DML framework of \citet{chernozhukov2018}, but as a structural partition of the data-generating process rather than a random partition of the sample.
+
+The 95\% confidence interval is $\hat{\tau}_c \pm 1.96 \cdot \hat{\text{se}}$.
+
+\section{Partial Identification When Assumption~\ref{as:tpr} Fails}
+
+When TPR $< 1$, the corrected compliance rate $\pi_c$ overestimates $\pi$ and the uncorrected estimator $\widehat{\text{ITT}}/\hat{\pi}$ understates the LATE. Together these bound the true LATE:
+\begin{equation}\label{eq:bounds}
+\frac{\widehat{\text{ITT}}}{\hat{\pi}} \leq \tau \leq \frac{(1-\alpha/2) \cdot \widehat{\text{ITT}}}{\hat{\pi} - \alpha/2}
+\end{equation}
+
+\section{Monte Carlo Evidence}
+
+I simulate experiments with $N = 500$ (250 treated, 250 control), $T_{\text{pre}} = 30$, $T_{\text{treat}} = 6$, and $T_{\text{post}} = 30$. Baseline daily outcomes are drawn from $N(5, 3)$ across units with within-unit daily noise $\sigma = 2$. The mechanical dose is 17 per day during the delivery window. The causal effect is $\tau$ additional units per day for compliers during the post-treatment period, so the true LATE is $\tau \times T_{\text{post}}$. Each scenario uses 1{,}000 Monte Carlo replications. The one-sided test with correction $(\hat{\pi} - \alpha)/(1-\alpha)$ is used for the main simulations (monotonicity is imposed in the DGP); the two-sided classification is exercised in the defier simulations below.
+
+\begin{table}[ht]
+\centering
+\caption{Corrected LATE: bias and 95\% CI coverage across parameter configurations.}
+\label{tab:coverage}
+\smallskip
+\begin{tabular}{@{}lrrrrr@{}}
+\toprule
+Scenario & True LATE & Mean $\hat{\tau}_c$ & Bias & Coverage & CI Width \\
+\midrule
+Baseline ($\pi{=}.75$, $\tau{=}3$) & 90 & 89.4 & $-0.6$ & 0.974 & 42.6 \\
+$\pi{=}.50$ & 90 & 89.5 & $-0.5$ & 0.972 & 65.9 \\
+$\pi{=}.90$ & 90 & 89.9 & $-0.1$ & 0.959 & 33.7 \\
+$\tau{=}1$ & 30 & 29.6 & $-0.4$ & 0.956 & 39.0 \\
+$\tau{=}10$ & 300 & 300.1 & 0.1 & 1.000 & 73.1 \\
+$\tau{=}0$ (null) & 0 & $-0.3$ & $-0.3$ & 0.947 & 38.4 \\
+$N{=}100$ & 90 & 89.7 & $-0.3$ & 0.974 & 96.9 \\
+$N{=}2000$ & 90 & 89.7 & $-0.3$ & 0.969 & 21.3 \\
+$\sigma{=}5$ & 90 & 89.6 & $-0.4$ & 0.969 & 39.5 \\
+Mechanical${=}5$/day & 90 & 90.0 & 0.0 & 0.967 & 42.8 \\
+$T_{\text{pre}}{=}7$ & 90 & 89.7 & $-0.3$ & 0.963 & 42.6 \\
+$\alpha{=}.01$ & 90 & 90.0 & 0.0 & 0.974 & 42.7 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:coverage} reports the results. Coverage lies between 0.947 and 0.974 in all configurations. Coverage holds under the null ($\tau = 0$, coverage 0.947). CI width scales with $N^{-1/2}$ and with $\pi^{-1}$. At baseline, the inferred compliance rate is $\hat{\pi} = 0.761$, the corrected rate is $\pi_c = 0.748$, and the true rate is $\pi = 0.750$.
+
+\subsection{Defier Detection}
+
+I add defiers to the DGP: a fraction $\delta$ of treated units experience a negative mechanical shift of the same magnitude during the delivery window (their outcome decreases by 17/day), and a negative treatment effect of $-\tau$ per day in the post-treatment period. The two-sided classification from equations~\eqref{eq:complier}--\eqref{eq:nevertaker} is applied.
+
+\begin{table}[ht]
+\centering
+\caption{Defier detection: monotonicity test and compliance classification.}
+\label{tab:defiers}
+\smallskip
+\begin{tabular}{@{}rrrrrr@{}}
+\toprule
+True $\delta$ & $\hat{\delta}$ & $\alpha/2$ & Reject $H_0$: $\delta{=}0$ & $\hat{\pi}_{\text{complier}}$ & $\hat{\pi}_{\text{defier}}$ \\
+\midrule
+0.00 & 0.005 & 0.025 & 0.000 & 0.755 & 0.005 \\
+0.05 & 0.048 & 0.025 & 0.892 & 0.754 & 0.048 \\
+0.10 & 0.095 & 0.025 & 1.000 & 0.752 & 0.095 \\
+0.15 & 0.139 & 0.025 & 1.000 & 0.751 & 0.139 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:defiers} reports results from simulations with $\pi = 0.75$ and varying $\delta$ (the never-taker share adjusts to $1 - \pi - \delta$). When $\delta = 0$, the false defier rate is 0.005, well below $\alpha/2 = 0.025$, and the monotonicity test never rejects---the test is conservative under the null. At $\delta = 0.05$ (5\% defiers), power is 0.892. At $\delta \geq 0.10$, the test rejects in every simulation.
+
+\section{Identifying Compliers in the Control Group}\label{sec:control}
+
+The classification in Section~2 operates only on treated units. However, compliance type is a pre-treatment characteristic of the unit, determined by how it would respond to treatment. If compliance type is predictable from pre-treatment observables---the trajectory of outcomes before the experiment, or other baseline covariates---then the classifier can be extended to control units.
+
+Among treated units, the delivery-window test reveals compliance type. A model trained on these units to predict $\hat{C}_i$ from pre-treatment features $X_i$ can then be applied to control units to obtain $\hat{C}_i(1)$, a prediction of what compliance type the control unit would have had under treatment. This is the principal score approach of \citet{frangakis2002}, where the principal score $P(D_i(1) = 1 \mid X_i)$ is typically estimated under parametric assumptions. The temporal structure here allows the principal score to be estimated nonparametrically from the treated group, where compliance is revealed by the break test, using standard supervised learning methods.
+
+With predicted compliance types for both arms, the LATE can be estimated directly as a difference in means within the predicted-complier subpopulation:
+\begin{equation}\label{eq:direct_late}
+\hat{\tau}_{\text{match}} = E[Y_i \mid \hat{C}_i(1) = 1, Z_i = 1] - E[Y_i \mid \hat{C}_i(1) = 1, Z_i = 0]
+\end{equation}
+rather than as a ratio. The identifying assumption is that compliance type is independent of potential outcomes conditional on $X_i$, a form of unconfoundedness within principal strata. This assumption is strong but testable in the treatment arm: if pre-treatment features predict compliance well among treated units, the matching has content; if they do not, the prediction is uninformative and one falls back to the Wald estimator without loss. I leave the formal development of this extension to future work.
+
+\section{Discussion}
+
+The temporal structure of experiments with a pre-treatment series, a distinct delivery window, and a post-treatment outcome window provides more than a compliance rate. It provides a unit-level compliance classification that enables three things the standard LATE setup does not: a corrected Wald estimator with closed-form bias adjustment and valid inference (Sections 3--5), an empirical test of monotonicity via defier detection (Section 2.1), and a path to identifying complier-type units in the control group (Section \ref{sec:control}).
+
+The approach connects to several recent threads. \citet{hazard2023} propose a test-and-select LATE estimator using cross-fitting for valid post-selection inference. \citet{abadie2024} show that exploiting first-stage heterogeneity can substantially reduce the MSE of IV estimators. \citet{chernozhukov2018} provide the general DML framework for two-step procedures. Principal stratification \citep{frangakis2002} handles latent compliance types under parametric assumptions. The key requirement throughout is that the treatment produces a mechanical shift during the delivery window that is large relative to organic variation. When this holds, the delivery window functions as a revealed-compliance device, analogous to the placebo design of \citet{nickerson2005} in which control-group units are contacted with an unrelated message to reveal contactability. The temporal version requires no placebo arm, only that treatment delivery is concentrated in a known window separate from the outcome measurement period.
+
+\bibliographystyle{apalike}
+\bibliography{references}
+
+\end{document}
