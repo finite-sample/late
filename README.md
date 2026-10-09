@@ -1,48 +1,44 @@
-# Exploiting Delivery-Window Data to Classify Compliance Types and Estimate LATE
+# LATE with unobserved treatment receipt
 
-In randomized experiments with imperfect compliance, the LATE requires observing treatment receipt and the Wald estimator requires the monotonicity assumption. When receipt is unobserved but the experiment has a pre-treatment time series and a distinct delivery window, a break test applied to the delivery window can classify treated units into compliers, never-takers, and defiers. This yields three things the standard LATE setup does not provide:
+This technical note studies delivery-window measurements as imperfect proxies for treatment receipt in randomized experiments with **one-sided noncompliance**. A known mechanical delivery signature may help measure receipt when ordinary delivery records are unavailable.
 
-1. An inferred compliance rate with closed-form bias correction: $\pi_c = (\hat{\pi} - \alpha/2)/(1 - \alpha/2)$
-2. An empirical test of monotonicity via defier detection
-3. A characterization of the complier subpopulation that can be projected onto the control group
+If the detector's sensitivity is `s`, its false-positive rate is `f`, and the fraction flagged among assigned units is `q`, then
 
-### Paper
+```text
+compliance = (q - f) / (s - f)
+LATE = assignment effect / compliance
+```
 
-[Exploiting Delivery-Window Data to Classify Compliance Types and Estimate LATE](note/inferred_compliance_note.pdf)
+The compliance formula is the established [Rogan–Gladen misclassification correction](https://doi.org/10.1093/oxfordjournals.aje.a112510). Its use requires known detection rates or suitable validation data, together with random assignment, exclusion, consistency, no interference, and a positive compliance fraction. The note does not claim a new identification result, a test of monotonicity, or empirical validation of the delivery-window idea.
 
-### Replication
+[Read the paper](note/inferred_compliance_note.pdf).
+
+The estimator retains the covariance between outcome and receipt-flag estimates and, for an independent validation sample, uncertainty in sensitivity and false positives. Separate delivery and outcome windows do not imply independence. Negative outcome changes do not identify IV defiers. The note also gives population sensitivity bounds and explains why comparisons within predicted-complier subgroups generally remain assignment effects.
+
+## Replication
+
+Python 3.11 or later, a LaTeX installation with `latexmk` and BibTeX, and the dependencies below are required. The recorded run environment is in [metadata.json](note/generated/metadata.json).
 
 ```bash
-# Coverage simulations (Table 1)
-python sim/coverage_simulation.py
-
-# Defier detection simulations (Table 2)
-python sim/defier_simulation.py
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements-dev.txt
+make all PYTHON=python
 ```
 
-### Repository Structure
+`make all` runs Black, isort, Flake8, statistical regression tests, the complete simulation, and the paper build. `make simulate` and `make paper` can be run separately. Tables and repeated numerical results are generated directly from the simulation; the paper does not maintain a second copy of those numbers.
 
+The study compares known calibration, independent receipt validation, incorrect perfect-sensitivity assumptions, serial dependence, weak detection, and a zero treatment effect. Confidence intervals are ordinary joint delta-method Wald intervals. They are not guaranteed to work with weak detection. Infeasible estimated compliance is reported as unavailable; coverage counts unavailable intervals as failures. Bias and width are conditional on an available estimate.
+
+- [Simulation and estimator](sim/coverage_simulation.py)
+- [Generated results](note/generated/coverage.csv), including Monte Carlo uncertainty and unavailable fractions
+- [Statistical tests](tests/test_inference.py)
+- [Paper source](note/inferred_compliance_note.tex)
+
+A smaller diagnostic run can use a separate output directory, preserving the paper's full-study results:
+
+```bash
+python sim/coverage_simulation.py --repetitions 100 --output /tmp/late-smoke
 ```
-├── note/
-│   ├── inferred_compliance_note.tex
-│   ├── inferred_compliance_note.pdf
-│   └── references.bib
-├── sim/
-│   ├── coverage_simulation.py
-│   └── defier_simulation.py
-└── README.md
-```
 
-### References
-
-- Abadie, A., Gu, J., and Shen, S. (2024). Instrumental variable estimation with first-stage heterogeneity. *Journal of Econometrics* 240(2): 105425.
-- Angrist, J.D., Imbens, G.W., and Rubin, D.B. (1996). Identification of causal effects using instrumental variables. *JASA* 91: 444-455.
-- Chernozhukov, V., Chetverikov, D., Demirer, M., Duflo, E., Hansen, C., Newey, W., and Robins, J. (2018). Double/debiased machine learning for treatment and structural parameters. *Econometrics Journal* 21: C1-C68.
-- Frangakis, C.E. and Rubin, D.B. (2002). Principal stratification in causal inference. *Biometrics* 58: 21-29.
-- Hazard, Y. and Löwe, S. (2023). Improving LATE estimation in experiments with imperfect compliance. Working paper.
-- Imbens, G.W. and Angrist, J.D. (1994). Identification and estimation of local average treatment effects. *Econometrica* 62: 467-475.
-- Nickerson, D.W. (2005). Scalable protocols offer efficient design for field experiments. *Political Analysis* 13: 233-252.
-
-### License
-
-MIT
+No application data or independently verified receipt records are included. Establishing an empirical contribution requires such evidence and validation that the detection rates transport to the intended experiment.

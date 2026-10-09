@@ -1,0 +1,8 @@
+{
+  "source_sha256": "1eadf24fd2aba03b2ecc6b8a5b07e9b61b0ab746e28a8fb1924e8d79331b49d7",
+  "seed": 20261009,
+  "repetitions": 2000,
+  "python": "3.14.7",
+  "numpy": "2.3.5",
+  "scipy": "1.16.3"
+}

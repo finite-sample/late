@@ -1,254 +1,287 @@
-"""
-CI coverage for corrected LATE estimator.
-Two approaches: delta method and bootstrap.
-"""
+"""Receipt misclassification, corrected LATE, and Monte Carlo evidence."""
+
+import argparse
+import csv
+import hashlib
+import json
+import platform
+from dataclasses import asdict, dataclass, replace
+from pathlib import Path
 
 import numpy as np
+import scipy
 from scipy import stats
-import pandas as pd
 
-np.random.seed(42)
-
-def generate_data(N=500, T_pre=30, T_treat=6, T_post=30, mu_base=5,
-                  sigma_base=3, sigma_noise=2, compliance_rate=0.75,
-                  mechanical_per_day=17, tau=3):
-    """Generate one experiment's data. Returns dict of arrays."""
-    N_treat = N // 2
-    n_compliers = int(N_treat * compliance_rate)
-    
-    base = np.maximum(np.random.normal(mu_base, sigma_base, N), 0.5)
-    pre = np.maximum(base[:, None] + np.random.normal(0, sigma_noise, (N, T_pre)), 0)
-    tw = np.maximum(base[:, None] + np.random.normal(0, sigma_noise, (N, T_treat)), 0)
-    tw[:n_compliers] += mechanical_per_day
-    post = np.maximum(base[:, None] + np.random.normal(0, sigma_noise, (N, T_post)), 0)
-    post[:n_compliers] += tau
-    Y = post.sum(axis=1)
-    
-    Z = np.zeros(N, dtype=int)
-    Z[:N_treat] = 1
-    
-    return {'Y': Y, 'Z': Z, 'pre': pre, 'tw': tw, 'N': N, 'N_treat': N_treat,
-            'T_pre': T_pre, 'T_treat': T_treat}
+ROOT = Path(__file__).resolve().parents[1]
 
 
-def infer_compliance(pre_treat, tw_treat, T_pre, T_treat, alpha=0.05):
-    """Return D_hat array for treated units."""
-    pre_m = pre_treat.mean(axis=1)
-    pre_s = pre_treat.std(axis=1, ddof=1)
-    tw_m = tw_treat.mean(axis=1)
-    se = np.sqrt(pre_s**2 / T_pre + pre_s**2 / T_treat)
-    se = np.maximum(se, 1e-10)
-    t = (tw_m - pre_m) / se
-    p = 1 - stats.t.cdf(t, df=T_pre - 1)
-    return (p < alpha).astype(int)
+@dataclass(frozen=True)
+class Design:
+    n: int = 500
+    pi: float = 0.75
+    tau: float = 3.0
+    dose: float = 2.0
+    rho: float = 0.0
+    pre: int = 30
+    delivery: int = 6
+    post: int = 30
+    sigma: float = 2.0
+    baseline_mean: float = 5.0
+    baseline_sd: float = 3.0
+    alpha: float = 0.05
+    validation_per_class: int = 500
 
 
-def estimate_late(Y, Z, D_hat_treat, alpha=0.05):
-    """
-    Returns: (corrected_late, se_delta, ci_lo_delta, ci_hi_delta)
-    using delta method.
-    """
-    N_treat = Z.sum()
-    N_ctrl = len(Z) - N_treat
-    
-    Y1 = Y[Z == 1]
-    Y0 = Y[Z == 0]
-    
-    itt = Y1.mean() - Y0.mean()
-    var_itt = Y1.var(ddof=1) / N_treat + Y0.var(ddof=1) / N_ctrl
-    
-    pi_hat = D_hat_treat.mean()
-    # pi_hat is a sample mean of binary, so var = pi_hat*(1-pi_hat)/N_treat
-    var_pi_hat = pi_hat * (1 - pi_hat) / N_treat
-    
-    pi_c = (pi_hat - alpha) / (1 - alpha)
-    
-    if pi_c <= 0:
-        return np.nan, np.nan, np.nan, np.nan
-    
-    late_c = itt / pi_c
-    
-    # Delta method for f(ITT, pi_hat) = (1-alpha)*ITT / (pi_hat - alpha)
-    # df/dITT = (1-alpha)/(pi_hat - alpha) = 1/pi_c
-    # df/dpi_hat = -(1-alpha)*ITT/(pi_hat - alpha)^2 = -late_c / (pi_hat - alpha)
-    
-    denom = pi_hat - alpha
-    df_ditt = (1 - alpha) / denom
-    df_dpi = -(1 - alpha) * itt / denom**2
-    
-    var_late = df_ditt**2 * var_itt + df_dpi**2 * var_pi_hat
-    se_late = np.sqrt(var_late)
-    
-    ci_lo = late_c - 1.96 * se_late
-    ci_hi = late_c + 1.96 * se_late
-    
-    return late_c, se_late, ci_lo, ci_hi
+def windows(receipt, design, rng):
+    """Gaussian daily outcomes with stationary AR(1) noise across all windows."""
+    n = len(receipt)
+    total = design.pre + design.delivery + design.post
+    baseline = rng.normal(design.baseline_mean, design.baseline_sd, n)
+    noise = rng.normal(0, design.sigma, (n, total))
+    if design.rho:
+        scale = np.sqrt(1 - design.rho**2)
+        for day in range(1, total):
+            noise[:, day] = design.rho * noise[:, day - 1] + scale * noise[:, day]
+    values = baseline[:, None] + noise
+    end = design.pre + design.delivery
+    values[:, design.pre : end] += design.dose * receipt[:, None]
+    values[:, end:] += design.tau * receipt[:, None]
+    return values[:, : design.pre], values[:, design.pre : end], values[:, end:]
 
 
-def bootstrap_ci(Y, Z, pre, tw, T_pre, T_treat, alpha=0.05, n_boot=500):
-    """
-    Nonparametric bootstrap: resample units (package-level), recompute everything.
-    Returns (corrected_late, ci_lo, ci_hi).
-    """
-    N = len(Y)
-    N_treat = Z.sum()
-    
-    # Point estimate
-    D_hat = infer_compliance(pre[:N_treat], tw[:N_treat], T_pre, T_treat, alpha)
-    pi_hat = D_hat.mean()
-    pi_c = (pi_hat - alpha) / (1 - alpha)
-    itt = Y[Z == 1].mean() - Y[Z == 0].mean()
-    if pi_c <= 0:
-        return np.nan, np.nan, np.nan
-    late_c = itt / pi_c
-    
-    boot_lates = np.zeros(n_boot)
-    treat_idx = np.where(Z == 1)[0]
-    ctrl_idx = np.where(Z == 0)[0]
-    
-    for b in range(n_boot):
-        # Resample within treatment and control
-        bt = np.random.choice(N_treat, N_treat, replace=True)
-        bc = np.random.choice(len(ctrl_idx), len(ctrl_idx), replace=True)
-        
-        Y1_b = Y[treat_idx[bt]]
-        Y0_b = Y[ctrl_idx[bc]]
-        pre_b = pre[treat_idx[bt]]
-        tw_b = tw[treat_idx[bt]]
-        
-        itt_b = Y1_b.mean() - Y0_b.mean()
-        D_hat_b = infer_compliance(pre_b, tw_b, T_pre, T_treat, alpha)
-        pi_hat_b = D_hat_b.mean()
-        pi_c_b = (pi_hat_b - alpha) / (1 - alpha)
-        
-        if pi_c_b > 0:
-            boot_lates[b] = itt_b / pi_c_b
+def receipt_flag(pre, delivery, alpha):
+    """Fixed upper-tail rule; its nominal level need not equal its actual FPR."""
+    se = pre.std(axis=1, ddof=1) * np.sqrt(1 / pre.shape[1] + 1 / delivery.shape[1])
+    statistic = (delivery.mean(axis=1) - pre.mean(axis=1)) / se
+    return (statistic > stats.t.ppf(1 - alpha, pre.shape[1] - 1)).astype(float)
+
+
+def gaussian_rates(design):
+    """Exact sensitivity and FPR under independent Gaussian daily noise."""
+    if design.rho != 0:
+        raise ValueError("Gaussian t calibration requires independent daily noise")
+    nc = design.dose / (design.sigma * np.sqrt(1 / design.pre + 1 / design.delivery))
+    cutoff = stats.t.ppf(1 - design.alpha, design.pre - 1)
+    return float(stats.nct.sf(cutoff, design.pre - 1, nc)), design.alpha
+
+
+def calibration(design, rng):
+    """Independent validation samples with verified receipt, one per class."""
+    m = design.validation_per_class
+    receipt = np.repeat([1.0, 0.0], m)
+    pre, delivery, _ = windows(receipt, design, rng)
+    flags = receipt_flag(pre, delivery, design.alpha)
+    sensitivity, false_positive = flags[:m].mean(), flags[m:].mean()
+    variance = np.array([flags[:m].var(ddof=1) / m, flags[m:].var(ddof=1) / m])
+    return sensitivity, false_positive, variance
+
+
+def ratio_gradient(a, q, s, f):
+    return np.array(
+        [
+            (s - f) / (q - f),
+            -a * (s - f) / (q - f) ** 2,
+            a / (q - f),
+            a * (s - q) / (q - f) ** 2,
+        ]
+    )
+
+
+def estimate_late(y1, y0, flags, s, f, calibration_variance=(0.0, 0.0)):
+    """Joint delta variance for independent units and independent calibration."""
+    y1, y0, flags = map(np.asarray, (y1, y0, flags))
+    if len(y1) != len(flags) or min(len(y1), len(y0)) < 2:
+        raise ValueError("Need aligned treated flags and at least two units per arm")
+    if not (0 <= f < s <= 1):
+        raise ValueError("Need 0 <= false-positive rate < sensitivity <= 1")
+    a, q = y1.mean() - y0.mean(), flags.mean()
+    pi = (q - f) / (s - f)
+    if not 0 < pi <= 1:
+        raise ValueError("Corrected compliance outside (0, 1]; no Wald interval")
+    covariance = np.zeros((4, 4))
+    covariance[:2, :2] = np.cov(y1, flags, ddof=1) / len(y1)
+    covariance[0, 0] += y0.var(ddof=1) / len(y0)
+    covariance[2, 2], covariance[3, 3] = calibration_variance
+    gradient = ratio_gradient(a, q, s, f)
+    variance = float(gradient @ covariance @ gradient)
+    estimate = a / pi
+    se = np.sqrt(max(variance, 0))
+    return {
+        "estimate": float(estimate),
+        "se": float(se),
+        "pi": float(pi),
+        "lo": float(estimate - stats.norm.ppf(0.975) * se),
+        "hi": float(estimate + stats.norm.ppf(0.975) * se),
+        "cov_itt_flag": float(covariance[0, 1]),
+    }
+
+
+def sensitivity_bounds(itt, q, f, s_lower, s_upper):
+    """Population bounds with known FPR and a sensitivity interval."""
+    if not (0 <= f < q <= 1 and 0 <= s_lower <= s_upper <= 1):
+        raise ValueError("Invalid probability restrictions")
+    lower = max(s_lower, q)
+    if lower > s_upper:
+        raise ValueError("Sensitivity range incompatible with observed flag rate")
+    effects = [itt * (s - f) / (q - f) for s in (lower, s_upper)]
+    shares = [(q - f) / (s - f) for s in (s_upper, lower)]
+    return tuple(shares), tuple(sorted(effects))
+
+
+def run_scenario(design, mode, repetitions, seed):
+    rng = np.random.default_rng(seed)
+    estimates, widths, covered, covariances = [], [], [], []
+    rates = []
+    failures = 0
+    for _ in range(repetitions):
+        complier = rng.binomial(1, design.pi, design.n)
+        assigned = np.zeros(design.n, dtype=bool)
+        assigned[rng.choice(design.n, design.n // 2, replace=False)] = True
+        receipt = assigned * complier
+        pre, delivery, post = windows(receipt, design, rng)
+        flags = receipt_flag(pre[assigned], delivery[assigned], design.alpha)
+        if mode == "validated":
+            s, f, rate_variance = calibration(design, rng)
+        elif mode == "perfect sensitivity":
+            s, f, rate_variance = 1.0, design.alpha, (0.0, 0.0)
         else:
-            boot_lates[b] = np.nan
-    
-    valid = boot_lates[~np.isnan(boot_lates)]
-    if len(valid) < 50:
-        return late_c, np.nan, np.nan
-    
-    # Percentile CI
-    ci_lo = np.percentile(valid, 2.5)
-    ci_hi = np.percentile(valid, 97.5)
-    
-    return late_c, ci_lo, ci_hi
+            s, f = gaussian_rates(replace(design, rho=0))
+            rate_variance = (0.0, 0.0)
+        rates.append((s, f))
+        y = post.sum(axis=1)
+        try:
+            result = estimate_late(
+                y[assigned], y[~assigned], flags, s, f, rate_variance
+            )
+        except ValueError:
+            failures += 1
+            covered.append(False)
+            continue
+        estimates.append(result["estimate"])
+        widths.append(result["hi"] - result["lo"])
+        covered.append(result["lo"] <= design.tau * design.post <= result["hi"])
+        covariances.append(result["cov_itt_flag"])
+    coverage = np.mean(covered)
+    return {
+        "repetitions": repetitions,
+        "true_late": design.tau * design.post,
+        "mean": float(np.mean(estimates)) if estimates else float("nan"),
+        "bias": (
+            float(np.mean(estimates) - design.tau * design.post)
+            if estimates
+            else float("nan")
+        ),
+        "coverage": float(coverage),
+        "coverage_mcse": float(np.sqrt(coverage * (1 - coverage) / repetitions)),
+        "mean_width": float(np.mean(widths)) if widths else float("nan"),
+        "unavailable": failures / repetitions,
+        "mean_s": float(np.mean(rates, axis=0)[0]),
+        "mean_f": float(np.mean(rates, axis=0)[1]),
+        "mean_cov_itt_flag": (
+            float(np.mean(covariances)) if covariances else float("nan")
+        ),
+    }
 
 
-def run_coverage(n_sims=1000, do_bootstrap=False, **kwargs):
-    """Run coverage simulation. Returns DataFrame."""
-    tau = kwargs.get('tau', 3)
-    T_post = kwargs.get('T_post', 30)
-    true_late = tau * T_post
-    
-    results = []
-    for s in range(n_sims):
-        data = generate_data(**kwargs)
-        D_hat = infer_compliance(data['pre'][:data['N_treat']],
-                                 data['tw'][:data['N_treat']],
-                                 data['T_pre'], data['T_treat'])
-        
-        late_c, se_d, ci_lo_d, ci_hi_d = estimate_late(
-            data['Y'], data['Z'], D_hat)
-        
-        covers_delta = (ci_lo_d <= true_late <= ci_hi_d) if not np.isnan(ci_lo_d) else np.nan
-        
-        row = {'late_c': late_c, 'se_delta': se_d,
-               'ci_lo_delta': ci_lo_d, 'ci_hi_delta': ci_hi_d,
-               'covers_delta': covers_delta}
-        
-        if do_bootstrap:
-            _, ci_lo_b, ci_hi_b = bootstrap_ci(
-                data['Y'], data['Z'], data['pre'], data['tw'],
-                data['T_pre'], data['T_treat'], n_boot=300)
-            covers_boot = (ci_lo_b <= true_late <= ci_hi_b) if not np.isnan(ci_lo_b) else np.nan
-            row.update({'ci_lo_boot': ci_lo_b, 'ci_hi_boot': ci_hi_b,
-                        'covers_boot': covers_boot})
-        
-        results.append(row)
-    
-    return pd.DataFrame(results)
+def run_study(repetitions=2000, seed=20261009, output=ROOT / "note" / "generated"):
+    base = Design()
+    scenarios = [
+        ("Strong signal", replace(base, dose=5), "known"),
+        ("Moderate signal", base, "known"),
+        ("Moderate, validated", base, "validated"),
+        ("Assume perfect detection", base, "perfect sensitivity"),
+        ("Serial noise, validated", replace(base, rho=0.6), "validated"),
+        ("Serial noise, iid rates", replace(base, rho=0.6), "iid rates"),
+        ("Weak signal, validated", replace(base, dose=0.5), "validated"),
+        ("Null effect, validated", replace(base, tau=0), "validated"),
+    ]
+    rows = []
+    for index, (name, design, mode) in enumerate(scenarios):
+        result = run_scenario(
+            design, mode, repetitions, np.random.SeedSequence([seed, index])
+        )
+        row = {"scenario": name, "calibration": mode, **asdict(design), **result}
+        rows.append(row)
+        print(
+            name,
+            {k: round(result[k], 3) for k in ("bias", "coverage", "unavailable")},
+            flush=True,
+        )
+    output.mkdir(parents=True, exist_ok=True)
+    with (output / "coverage.csv").open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=rows[0].keys())
+        writer.writeheader()
+        writer.writerows(rows)
+    lines = []
+    for row in rows:
+        lines.append(
+            f"{row['scenario']} & {row['true_late']:.0f} & {row['bias']:.1f} & "
+            f"{row['coverage']:.3f} & {row['mean_width']:.1f} & "
+            f"{row['unavailable']:.3f} \\\\"
+        )
+    table = (
+        r"\begin{tabular}{@{}lrrrrr@{}}"
+        + "\n"
+        + r"\toprule"
+        + "\n"
+        + r"Scenario & True LATE & Bias & Coverage & Width & Unavailable\\"
+        + "\n"
+        + r"\midrule"
+        + "\n"
+        + "\n".join(lines)
+        + "\n"
+        + r"\bottomrule"
+        + "\n"
+        + r"\end{tabular}"
+        + "\n"
+    )
+    (output / "coverage_table.tex").write_text(table)
+    macros = {
+        "Replications": str(repetitions),
+        "UntreatedMean": f"{base.baseline_mean * base.post:.0f}",
+    }
+    for label, idx in [
+        ("Moderate", 2),
+        ("Perfect", 3),
+        ("Serial", 4),
+        ("WrongSerial", 5),
+        ("Weak", 6),
+    ]:
+        macros[label + "Coverage"] = f"{rows[idx]['coverage']:.3f}"
+        macros[label + "Bias"] = f"{rows[idx]['bias']:.1f}"
+        macros[label + "Unavailable"] = f"{rows[idx]['unavailable']:.3f}"
+    macros["ModerateSensitivity"] = f"{gaussian_rates(base)[0]:.3f}"
+    (output / "results.tex").write_text(
+        "\n".join(
+            f"\\newcommand{{\\{name}}}{{{value}}}" for name, value in macros.items()
+        )
+        + "\n"
+    )
+    (output / "metadata.json").write_text(
+        json.dumps(
+            {
+                "source_sha256": hashlib.sha256(
+                    Path(__file__).read_bytes()
+                ).hexdigest(),
+                "seed": seed,
+                "repetitions": repetitions,
+                "python": platform.python_version(),
+                "numpy": np.__version__,
+                "scipy": scipy.__version__,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    return rows
 
 
-# ============================================================
-# MAIN
-# ============================================================
-
-print("=" * 70)
-print("COVERAGE OF 95% CIs FOR CORRECTED LATE")
-print("=" * 70)
-
-# --- Baseline with bootstrap ---
-print("\n--- BASELINE (pi=0.75, tau=3, N=500) ---")
-print("Running with bootstrap (this takes a moment)...")
-df = run_coverage(n_sims=500, do_bootstrap=True)
-true_late = 90
-
-print(f"\nTrue LATE: {true_late}")
-print(f"Corrected LATE mean: {df['late_c'].mean():.2f} (sd={df['late_c'].std():.2f})")
-print(f"\nDelta method CI:")
-print(f"  Mean width: {(df['ci_hi_delta'] - df['ci_lo_delta']).mean():.2f}")
-print(f"  Coverage: {df['covers_delta'].mean():.3f}")
-print(f"\nBootstrap CI:")
-print(f"  Mean width: {(df['ci_hi_boot'] - df['ci_lo_boot']).dropna().mean():.2f}")
-print(f"  Coverage: {df['covers_boot'].dropna().mean():.3f}")
-
-# --- Delta method coverage across scenarios (faster) ---
-print("\n\n--- COVERAGE ACROSS SCENARIOS (delta method, 1000 sims each) ---")
-print(f"{'Scenario':<35} {'LATE':>6} {'Bias':>6} {'Coverage':>8} {'Width':>8}")
-print("-" * 68)
-
-scenarios = [
-    ("Baseline (pi=.75, tau=3)", dict(compliance_rate=0.75, tau=3)),
-    ("Low compliance (pi=.50)", dict(compliance_rate=0.50, tau=3)),
-    ("High compliance (pi=.90)", dict(compliance_rate=0.90, tau=3)),
-    ("Small effect (tau=1)", dict(compliance_rate=0.75, tau=1)),
-    ("Large effect (tau=10)", dict(compliance_rate=0.75, tau=10)),
-    ("Null effect (tau=0)", dict(compliance_rate=0.75, tau=0)),
-    ("Small N (N=100)", dict(compliance_rate=0.75, tau=3, N=100)),
-    ("Large N (N=2000)", dict(compliance_rate=0.75, tau=3, N=2000)),
-    ("High noise (sig=5)", dict(compliance_rate=0.75, tau=3, sigma_noise=5)),
-    ("Low mechanical (mech=5)", dict(compliance_rate=0.75, tau=3, mechanical_per_day=5)),
-    ("Short pre (T_pre=7)", dict(compliance_rate=0.75, tau=3, T_pre=7)),
-    ("alpha=0.01", dict(compliance_rate=0.75, tau=3)),  # handle separately
-]
-
-for name, kw in scenarios:
-    alpha = 0.05
-    if 'alpha=0.01' in name:
-        alpha = 0.01
-    
-    tau_val = kw.get('tau', 3)
-    T_post_val = kw.get('T_post', 30)
-    true_l = tau_val * T_post_val
-    
-    # Need to pass alpha through... let me handle it
-    if 'alpha=0.01' in name:
-        # Custom run with alpha=0.01
-        n_sims_here = 1000
-        covers = []
-        widths = []
-        lates = []
-        for s in range(n_sims_here):
-            data = generate_data(**{k:v for k,v in kw.items()})
-            D_hat = infer_compliance(data['pre'][:data['N_treat']],
-                                     data['tw'][:data['N_treat']],
-                                     data['T_pre'], data['T_treat'], alpha=0.01)
-            late_c, se_d, ci_lo, ci_hi = estimate_late(
-                data['Y'], data['Z'], D_hat, alpha=0.01)
-            if not np.isnan(ci_lo):
-                covers.append(ci_lo <= true_l <= ci_hi)
-                widths.append(ci_hi - ci_lo)
-                lates.append(late_c)
-        mean_late = np.mean(lates)
-        print(f"{name:<35} {mean_late:>6.1f} {mean_late-true_l:>6.1f} "
-              f"{np.mean(covers):>8.3f} {np.mean(widths):>8.1f}")
-    else:
-        df = run_coverage(n_sims=1000, do_bootstrap=False, **kw)
-        mean_late = df['late_c'].dropna().mean()
-        cov = df['covers_delta'].dropna().mean()
-        wid = (df['ci_hi_delta'] - df['ci_lo_delta']).dropna().mean()
-        print(f"{name:<35} {mean_late:>6.1f} {mean_late-true_l:>6.1f} "
-              f"{cov:>8.3f} {wid:>8.1f}")
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--repetitions", type=int, default=2000)
+    parser.add_argument("--seed", type=int, default=20261009)
+    parser.add_argument("--output", type=Path, default=ROOT / "note" / "generated")
+    args = parser.parse_args()
+    if args.repetitions < 2:
+        parser.error("--repetitions must be at least 2")
+    run_study(args.repetitions, args.seed, args.output)

@@ -1,1 +1,13 @@
 .DS_Store
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+note/*.aux
+note/*.bbl
+note/*.blg
+note/*.fdb_latexmk
+note/*.fls
+note/*.log
+note/*.out
+note/*.synctex.gz
